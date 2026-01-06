@@ -1,0 +1,227 @@
+CREATE TABLE IF NOT EXISTS analisisfinanciero.dim_modalidad (
+    id_modalidad INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    modalidad TEXT NOT NULL,
+    CONSTRAINT uq_dim_modalidad UNIQUE (modalidad)
+);
+
+INSERT INTO analisisfinanciero.dim_modalidad (modalidad)
+SELECT DISTINCT
+    TRIM(modalidad_de_contrataci_n)
+FROM procesados.secop_contratos_2025_procesados_financiero
+WHERE TRIM(modalidad_de_contrataci_n) IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+
+
+CREATE TABLE IF NOT EXISTS analisisfinanciero.dim_estado_proceso (
+    id_estado INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    estado TEXT NOT NULL,
+    CONSTRAINT uq_dim_estado_proceso UNIQUE (estado)
+);
+
+INSERT INTO analisisfinanciero.dim_estado_proceso (estado)
+SELECT DISTINCT
+    TRIM(estado_del_proceso)
+FROM procesados.secop_contratos_2025_procesados_financiero
+WHERE TRIM(estado_del_proceso) IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+
+
+CREATE TABLE IF NOT EXISTS analisisfinanciero.dim_entidad (
+    id_entidad INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    codigo_entidad_en_secop TEXT NOT NULL,
+    nombre_entidad TEXT,
+    nit_entidad TEXT,
+    nivel_entidad TEXT,
+    departamento TEXT,
+    municipio TEXT,
+    CONSTRAINT uq_dim_entidad_codigo UNIQUE (codigo_entidad_en_secop)
+);
+
+INSERT INTO analisisfinanciero.dim_entidad (
+    codigo_entidad_en_secop,
+    nombre_entidad,
+    nit_entidad,
+    nivel_entidad,
+    departamento,
+    municipio
+)
+SELECT DISTINCT
+    TRIM(codigo_entidad_en_secop),
+    NULLIF(TRIM(nombre_de_la_entidad), ''),
+    NULLIF(TRIM(nit_de_la_entidad), ''),
+    NULLIF(TRIM(nivel_entidad), ''),
+    NULLIF(TRIM(departamento_entidad), ''),
+    NULLIF(TRIM(municipio_entidad), '')
+FROM procesados.secop_contratos_2025_procesados_financiero
+WHERE TRIM(codigo_entidad_en_secop) IS NOT NULL
+ON CONFLICT (codigo_entidad_en_secop) DO NOTHING;
+
+
+
+CREATE TABLE IF NOT EXISTS analisisfinanciero.dim_proveedor (
+    id_proveedor INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    nombre_proveedor TEXT,
+    tipo_documento TEXT,
+    documento TEXT,
+    CONSTRAINT uq_dim_proveedor_doc UNIQUE (tipo_documento, documento)
+);
+
+INSERT INTO analisisfinanciero.dim_proveedor (
+    nombre_proveedor,
+    tipo_documento,
+    documento
+)
+SELECT DISTINCT
+    NULLIF(TRIM(nom_raz_social_contratista), ''),
+    NULLIF(TRIM(tipo_documento_proveedor), ''),
+    NULLIF(TRIM(documento_proveedor::TEXT), '')
+FROM procesados.secop_contratos_2025_procesados_financiero
+WHERE documento_proveedor IS NOT NULL
+ON CONFLICT (tipo_documento, documento) DO NOTHING;
+
+
+
+CREATE TABLE analisisfinanciero.dim_tiempo (
+    id_fecha SERIAL PRIMARY KEY,
+    fecha DATE NOT NULL UNIQUE,
+    anio INTEGER NOT NULL,
+    mes INTEGER NOT NULL,
+    dia INTEGER NOT NULL
+);
+
+
+INSERT INTO analisisfinanciero.dim_tiempo (fecha, anio, mes, dia)
+SELECT DISTINCT
+    fecha,
+    EXTRACT(YEAR FROM fecha)::INT AS anio,
+    EXTRACT(MONTH FROM fecha)::INT AS mes,
+    EXTRACT(DAY FROM fecha)::INT AS dia
+FROM (
+    SELECT fecha_de_firma_del_contrato AS fecha
+    FROM procesados.secop_contratos_2025_procesados_financiero
+    WHERE fecha_de_firma_del_contrato IS NOT NULL
+
+    UNION
+
+    SELECT fecha_inicio_ejecuci_n
+    FROM procesados.secop_contratos_2025_procesados_financiero
+    WHERE fecha_inicio_ejecuci_n IS NOT NULL
+
+    UNION
+
+    SELECT fecha_fin_ejecuci_n
+    FROM procesados.secop_contratos_2025_procesados_financiero
+    WHERE fecha_fin_ejecuci_n IS NOT NULL
+) f
+ON CONFLICT (fecha) DO NOTHING;
+
+
+
+CREATE TABLE analisisfinanciero.fact_contrato (
+    id_fact_contrato BIGSERIAL PRIMARY KEY,
+
+    numero_contrato TEXT NOT NULL,
+    numero_proceso TEXT NOT NULL,
+
+    valor_contratado NUMERIC(18,2),
+
+    objeto_del_proceso TEXT,
+    objeto_a_contratar TEXT,
+    url_contrato TEXT,
+
+    -- Dim tiempo
+    id_fecha_firma INTEGER,
+    id_fecha_inicio INTEGER,
+    id_fecha_fin INTEGER,
+
+    -- Dimensiones
+    id_entidad INTEGER NOT NULL,
+    id_proveedor INTEGER,
+    id_modalidad INTEGER,
+    id_estado INTEGER,
+
+    origen TEXT,
+
+    CONSTRAINT fk_fact_fecha_firma
+        FOREIGN KEY (id_fecha_firma) REFERENCES analisisfinanciero.dim_tiempo(id_fecha),
+
+    CONSTRAINT fk_fact_fecha_inicio
+        FOREIGN KEY (id_fecha_inicio) REFERENCES analisisfinanciero.dim_tiempo(id_fecha),
+
+    CONSTRAINT fk_fact_fecha_fin
+        FOREIGN KEY (id_fecha_fin) REFERENCES analisisfinanciero.dim_tiempo(id_fecha),
+
+    CONSTRAINT fk_fact_entidad
+        FOREIGN KEY (id_entidad) REFERENCES analisisfinanciero.dim_entidad(id_entidad),
+
+    CONSTRAINT fk_fact_proveedor
+        FOREIGN KEY (id_proveedor) REFERENCES analisisfinanciero.dim_proveedor(id_proveedor),
+
+    CONSTRAINT fk_fact_modalidad
+        FOREIGN KEY (id_modalidad) REFERENCES analisisfinanciero.dim_modalidad(id_modalidad),
+
+    CONSTRAINT fk_fact_estado
+        FOREIGN KEY (id_estado) REFERENCES analisisfinanciero.dim_estado_proceso(id_estado)
+);
+
+
+INSERT INTO analisisfinanciero.fact_contrato (
+    numero_contrato,
+    numero_proceso,
+    valor_contratado,
+    objeto_del_proceso,
+    objeto_a_contratar,
+    url_contrato,
+    id_fecha_firma,
+    id_fecha_inicio,
+    id_fecha_fin,
+    id_entidad,
+    id_proveedor,
+    id_modalidad,
+    id_estado,
+    origen
+)
+SELECT
+    r.numero_del_contrato,
+    r.numero_de_proceso,
+    r.valor_contrato,
+    r.objeto_del_proceso,
+    r.objeto_a_contratar,
+    r.url_contrato,
+
+    tf.id_fecha AS id_fecha_firma,
+    ti.id_fecha AS id_fecha_inicio,
+    tf2.id_fecha AS id_fecha_fin,
+
+    de.id_entidad,
+    dp.id_proveedor,
+    dm.id_modalidad,
+    ds.id_estado,
+
+    r.origen
+FROM procesados.secop_contratos_2025_procesados_financiero r
+
+-- Fechas
+LEFT JOIN analisisfinanciero.dim_tiempo tf
+    ON tf.fecha = r.fecha_de_firma_del_contrato
+
+LEFT JOIN analisisfinanciero.dim_tiempo ti
+    ON ti.fecha = r.fecha_inicio_ejecuci_n
+
+LEFT JOIN analisisfinanciero.dim_tiempo tf2
+    ON tf2.fecha = r.fecha_fin_ejecuci_n
+
+-- Dimensiones
+JOIN analisisfinanciero.dim_entidad de
+    ON de.codigo_entidad_en_secop = r.codigo_entidad_en_secop
+
+LEFT JOIN analisisfinanciero.dim_proveedor dp
+    ON dp.documento = r.documento_proveedor and dp.tipo_documento = r.tipo_documento_proveedor
+
+LEFT JOIN analisisfinanciero.dim_modalidad dm
+    ON dm.modalidad = r.modalidad_de_contrataci_n
+
+LEFT JOIN analisisfinanciero.dim_estado_proceso ds
+    ON ds.estado = r.estado_del_proceso;
